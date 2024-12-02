@@ -142,6 +142,9 @@ static inline bool is_frame_free(const frame_t *frame) {
     return frame->flags.free;
 }
 
+frame_t *get_backup_frame(void);
+frame_t *_get_backup_frame(void);
+
 #endif /* __ASSEMBLY__ */
 
 #endif /* KTF_PMM_H */

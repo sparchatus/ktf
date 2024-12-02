@@ -386,6 +386,13 @@ static inline void setup_tlb_global(void) {
     write_cr4(opt_tlb_global ? (cr4 | X86_CR4_PGE) : (cr4 & ~X86_CR4_PGE));
 }
 
+void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
+#if defined(__x86_64__)
+            unsigned long l4_flags,
+#endif
+            unsigned long l3_flags, unsigned long l2_flags, unsigned long l1_flags,
+            bool special_path);
+
 #endif /* __ASSEMBLY__ */
 
 #endif /* KTF_PAGETABLE_H */
