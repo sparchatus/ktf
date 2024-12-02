@@ -251,12 +251,14 @@ static inline frame_t *new_frame(mfn_t mfn, unsigned int order) {
 }
 
 static inline void add_early_frame(mfn_t mfn, unsigned int order) {
+    BUG_ON(in_reserved_range(mfn_to_paddr(mfn), ORDER_TO_SIZE(order)));
     frame_t *frame = new_frame(mfn, order);
 
     list_add(&frame->list, &free_frames[order]);
 }
 
 static inline void add_frame(mfn_t mfn, unsigned int order) {
+    BUG_ON(in_reserved_range(mfn_to_paddr(mfn), ORDER_TO_SIZE(order)));
     frame_t *frame = new_frame(mfn, order);
 
     list_add_tail(&frame->list, &free_frames[order]);
@@ -302,12 +304,24 @@ static size_t process_memory_range(unsigned index, unsigned first_avail_region) 
 
     /* Add initial 4K frames for early memory. */
     while (cur < MB(EARLY_VIRT_MEM) && cur + PAGE_SIZE <= end) {
-        add_early_frame(paddr_to_mfn(cur), PAGE_ORDER_4K);
+        /* if the current region overlaps with the reserved region then we skip it */
+        if (!in_reserved_range(cur, ORDER_TO_SIZE(PAGE_ORDER_4K))) {
+            add_early_frame(paddr_to_mfn(cur), PAGE_ORDER_4K);
+        }
         cur += ORDER_TO_SIZE(PAGE_ORDER_4K);
     }
 
     while (cur + PAGE_SIZE <= end) {
         unsigned int order = PADDR_TO_ORDER(cur);
+
+        /* Choose the largest region not overlapping a reserved area */
+        while (in_reserved_range(cur, ORDER_TO_SIZE(order))) {
+            if (order == PAGE_ORDER_4K) {
+                goto skip;
+            }
+            --order;
+        }
+
         if (order >= PAGE_ORDER_1G && cur + PAGE_SIZE_1G <= end) {
             add_frame(paddr_to_mfn(cur), PAGE_ORDER_1G);
             cur += ORDER_TO_SIZE(PAGE_ORDER_1G);
@@ -321,6 +335,7 @@ static size_t process_memory_range(unsigned index, unsigned first_avail_region) 
         }
 
         add_frame(paddr_to_mfn(cur), PAGE_ORDER_4K);
+    skip:
         cur += ORDER_TO_SIZE(PAGE_ORDER_4K);
     }
 

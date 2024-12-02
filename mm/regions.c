@@ -70,6 +70,11 @@ addr_range_t addr_ranges[] = {
     {0x0} /* NULL array terminator */
 };
 
+static unsigned regions_reserved_num;
+
+#define MAX_RESERVED_RANGES 1
+static addr_range_t reserved_ranges[MAX_RESERVED_RANGES];
+
 void display_memory_map(void) {
     printk("Memory Map:\n");
 
@@ -96,6 +101,30 @@ bool has_memory_range(paddr_t pa) {
     return mbi_get_memory_range(pa, NULL) == 0;
 }
 
+static inline bool ranges_overlap(addr_range_t const *range_a,
+                                  addr_range_t const *range_b) {
+    return (range_a->start < range_b->end) && (range_b->start < range_a->end);
+}
+
+bool in_reserved_range(paddr_t pa, size_t size) {
+    addr_range_t range;
+    range.start = _ptr(pa);
+    range.end = _ptr(pa + size);
+
+    for (unsigned int i = 0; i < regions_reserved_num; i++) {
+        if (ranges_overlap(&range, &reserved_ranges[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void init_regions(void) {
     regions_num = mbi_get_avail_memory_ranges_num();
+    regions_reserved_num = 0;
+
+    /* If multiboot is enabled, reserve it's physical address range */
+    if (mbi_reserved_range(&reserved_ranges[regions_reserved_num])) {
+        regions_reserved_num++;
+    }
 }
