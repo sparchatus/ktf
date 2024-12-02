@@ -41,7 +41,7 @@ static frames_array_t early_frames;
 static list_head_t free_frames[MAX_PAGE_ORDER + 1];
 static list_head_t busy_frames[MAX_PAGE_ORDER + 1];
 
-#define MIN_NUM_4K_FRAMES 16
+#define MIN_NUM_4K_FRAMES 2 + 4 + (MAX_PAGE_ORDER - PAGE_ORDER_4K)
 static size_t frames_count[MAX_PAGE_ORDER + 1];
 
 static spinlock_t lock = SPINLOCK_INIT;
@@ -108,7 +108,7 @@ static frames_array_t *new_frames_array(void) {
     if (!boot_flags.virt)
         array = (frames_array_t *) mfn_to_virt_kern(frame->mfn);
     else {
-        array = _vmap(
+        array = __vmap_paging(
             &cr3,
             _ptr(_ul(mfn_to_virt_map(frame->mfn)) & PAGE_ORDER_TO_MASK(PAGE_ORDER_4K)),
             frame->mfn, PAGE_ORDER_4K, L4_PROT, L3_PROT, L2_PROT, L1_PROT, true);

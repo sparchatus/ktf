@@ -277,12 +277,12 @@ static mfn_t get_pgentry_mfn(mfn_t tab_mfn, pt_index_t index, unsigned long flag
  * MAP_FAILED when failed to map a NULL (0x0) virtual address and otherwise
  * it returns the same virtual address passed as argument.
  */
-void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
+void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
 #if defined(__x86_64__)
-            unsigned long l4_flags,
+             unsigned long l4_flags,
 #endif
-            unsigned long l3_flags, unsigned long l2_flags, unsigned long l1_flags,
-            bool special_path) {
+             unsigned long l3_flags, unsigned long l2_flags, unsigned long l1_flags,
+             bool special_path) {
     mfn_t l1t_mfn, l2t_mfn, l3t_mfn;
     pgentry_t *tab, *entry;
 
@@ -324,24 +324,43 @@ void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
 done:
     return va;
 }
+static void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
+#if defined(__x86_64__)
+                   unsigned long l4_flags,
+#endif
+                   unsigned long l3_flags, unsigned long l2_flags,
+                   unsigned long l1_flags) {
+    return __vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags, false);
+}
+void *__vmap_paging(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
+#if defined(__x86_64__)
+                    unsigned long l4_flags,
+#endif
+                    unsigned long l3_flags, unsigned long l2_flags,
+                    unsigned long l1_flags, bool special_path) {
+    spin_lock(&vmap_lock);
+    void *res = __vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags,
+                       special_path);
+    spin_unlock(&vmap_lock);
+    return res;
+}
 
 static inline void *__vmap_1g(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned long l4_flags,
                               unsigned long l3_flags) {
     return _vmap(cr3_ptr, va, mfn, PAGE_ORDER_1G, l4_flags, l3_flags | _PAGE_PSE,
-                 PT_NO_FLAGS, PT_NO_FLAGS, false);
+                 PT_NO_FLAGS, PT_NO_FLAGS);
 }
 
 static inline void *__vmap_2m(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned long l4_flags,
                               unsigned long l3_flags, unsigned long l2_flags) {
     return _vmap(cr3_ptr, va, mfn, PAGE_ORDER_2M, l4_flags, l3_flags,
-                 l2_flags | _PAGE_PSE, PT_NO_FLAGS, false);
+                 l2_flags | _PAGE_PSE, PT_NO_FLAGS);
 }
 
 static inline void *__vmap_4k(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned long l4_flags,
                               unsigned long l3_flags, unsigned long l2_flags,
                               unsigned long l1_flags) {
-    return _vmap(cr3_ptr, va, mfn, PAGE_ORDER_4K, l4_flags, l3_flags, l2_flags, l1_flags,
-                 false);
+    return _vmap(cr3_ptr, va, mfn, PAGE_ORDER_4K, l4_flags, l3_flags, l2_flags, l1_flags);
 }
 
 static inline void *_vmap_1g(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned long l3_flags,
@@ -390,7 +409,7 @@ void *vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
     dprintk("%s: va: 0x%p mfn: 0x%lx (order: %u)\n", __func__, va, mfn, order);
 
     spin_lock(&vmap_lock);
-    va = _vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags, false);
+    va = _vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags);
     spin_unlock(&vmap_lock);
 
     return va;
@@ -887,8 +906,7 @@ static void map_pagetable(cr3_t *cr3_ptr, mfn_t table, int level) {
     void *va = mfn_to_virt_kern(table);
     pte_t *pt;
 
-    pt = _vmap(cr3_ptr, va, table, PAGE_ORDER_4K, L4_PROT, L3_PROT, L2_PROT, L1_PROT,
-               false);
+    pt = _vmap(cr3_ptr, va, table, PAGE_ORDER_4K, L4_PROT, L3_PROT, L2_PROT, L1_PROT);
     BUG_ON(!pt);
 
     for (int i = 0; i < level_to_entries(level) && level > 1; i++) {
@@ -984,7 +1002,7 @@ int map_pagetables_va(cr3_t *cr3_ptr, void *va) {
     err = -EFAULT;
     spin_lock(&vmap_lock);
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(cr3_ptr->mfn), cr3_ptr->mfn, PAGE_ORDER_4K,
-                L4_PROT, L3_PROT, L2_PROT, L1_PROT, false);
+                L4_PROT, L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto unlock;
 
@@ -996,7 +1014,7 @@ int map_pagetables_va(cr3_t *cr3_ptr, void *va) {
     }
 
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(l4e->mfn), l4e->mfn, PAGE_ORDER_4K, L4_PROT,
-                L3_PROT, L2_PROT, L1_PROT, false);
+                L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto unlock;
 #endif
@@ -1011,7 +1029,7 @@ int map_pagetables_va(cr3_t *cr3_ptr, void *va) {
         goto done;
 
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(l3e->mfn), l3e->mfn, PAGE_ORDER_4K, L4_PROT,
-                L3_PROT, L2_PROT, L1_PROT, false);
+                L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto unlock;
 
@@ -1025,7 +1043,7 @@ int map_pagetables_va(cr3_t *cr3_ptr, void *va) {
         goto done;
 
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(l2e->mfn), l2e->mfn, PAGE_ORDER_4K, L4_PROT,
-                L3_PROT, L2_PROT, L1_PROT, false);
+                L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto unlock;
 
@@ -1056,7 +1074,7 @@ int unmap_pagetables_va(cr3_t *cr3_ptr, void *va) {
     err = -EFAULT;
     spin_lock(&vmap_lock);
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(cr3_ptr->mfn), cr3_ptr->mfn, PAGE_ORDER_4K,
-                L4_PROT, L3_PROT, L2_PROT, L1_PROT, false);
+                L4_PROT, L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto cleanup;
     tables[level++] = tab;
@@ -1069,7 +1087,7 @@ int unmap_pagetables_va(cr3_t *cr3_ptr, void *va) {
     }
 
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(l4e->mfn), l4e->mfn, PAGE_ORDER_4K, L4_PROT,
-                L3_PROT, L2_PROT, L1_PROT, false);
+                L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto cleanup;
     tables[level++] = tab;
@@ -1085,7 +1103,7 @@ int unmap_pagetables_va(cr3_t *cr3_ptr, void *va) {
         goto done;
 
     tab = _vmap(cr3_ptr, mfn_to_virt_kern(l3e->mfn), l3e->mfn, PAGE_ORDER_4K, L4_PROT,
-                L3_PROT, L2_PROT, L1_PROT, false);
+                L3_PROT, L2_PROT, L1_PROT);
     if (!tab)
         goto cleanup;
     tables[level++] = tab;
