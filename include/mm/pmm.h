@@ -142,6 +142,7 @@ static inline bool is_frame_free(const frame_t *frame) {
     return frame->flags.free;
 }
 
+void refill_from_paging(void);
 frame_t *get_backup_frame(void);
 frame_t *_get_backup_frame(void);
 

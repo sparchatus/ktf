@@ -322,6 +322,7 @@ void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
     invlpg(va);
 
 done:
+    refill_from_paging();
     return va;
 }
 static void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
@@ -337,11 +338,13 @@ void *__vmap_paging(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
                     unsigned long l4_flags,
 #endif
                     unsigned long l3_flags, unsigned long l2_flags,
-                    unsigned long l1_flags, bool special_path) {
-    spin_lock(&vmap_lock);
+                    unsigned long l1_flags, bool special_path, bool take_lock) {
+    if (take_lock)
+        spin_lock(&vmap_lock);
     void *res = __vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags,
                        special_path);
-    spin_unlock(&vmap_lock);
+    if (take_lock)
+        spin_unlock(&vmap_lock);
     return res;
 }
 

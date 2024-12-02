@@ -41,7 +41,9 @@ static frames_array_t early_frames;
 static list_head_t free_frames[MAX_PAGE_ORDER + 1];
 static list_head_t busy_frames[MAX_PAGE_ORDER + 1];
 
-#define MIN_NUM_4K_FRAMES 2 + 4 + (MAX_PAGE_ORDER - PAGE_ORDER_4K)
+/* 1 frame for array frame, 3 for mapping it and then one additional frame for each page
+ * order we might have to split */
+#define MIN_NUM_4K_FRAMES 1 + 3 + (MAX_PAGE_ORDER - PAGE_ORDER_4K)
 static size_t frames_count[MAX_PAGE_ORDER + 1];
 
 static spinlock_t lock = SPINLOCK_INIT;
@@ -97,7 +99,7 @@ static inline void init_frames_array(frames_array_t *array) {
     list_add(&array->list, &frames);
 }
 
-static frames_array_t *new_frames_array(void) {
+static frames_array_t *new_frames_array(bool paging_lock) {
     frames_array_t *array;
     frame_t *frame;
 
@@ -111,7 +113,8 @@ static frames_array_t *new_frames_array(void) {
         array = __vmap_paging(
             &cr3,
             _ptr(_ul(mfn_to_virt_map(frame->mfn)) & PAGE_ORDER_TO_MASK(PAGE_ORDER_4K)),
-            frame->mfn, PAGE_ORDER_4K, L4_PROT, L3_PROT, L2_PROT, L1_PROT, true);
+            frame->mfn, PAGE_ORDER_4K, L4_PROT, L3_PROT, L2_PROT, L1_PROT, true,
+            paging_lock);
         if (!array)
             goto error;
     }
@@ -160,7 +163,18 @@ static inline frames_array_t *get_frames_array(void) {
             return array;
     }
 
-    return new_frames_array();
+    return new_frames_array(false);
+}
+
+static inline size_t get_frames_array_space(void) {
+    size_t space = 0;
+    frames_array_t *array;
+
+    list_for_each_entry (array, &frames, list) {
+        space += array->meta.free_count;
+    }
+
+    return space;
 }
 
 static inline bool put_frames_array(frames_array_t *array) {
@@ -195,7 +209,7 @@ static inline frame_t *take_frame(frame_t *frame, frames_array_t *array) {
     array->meta.free_count--;
 
     if (--total_free_frames <= MIN_FREE_FRAMES_THRESHOLD)
-        new_frames_array();
+        new_frames_array(false);
 
     return frame;
 }
@@ -692,4 +706,14 @@ void map_frames_array(void) {
 
         BUG_ON(!vmap_kern_4k(va, mfn, L1_PROT));
     }
+}
+
+void refill_from_paging(void) {
+    // make sure we have enough space to refill the 4K frames
+    // so we need space for one frame per
+    if (get_frames_array_space() < MIN_NUM_4K_FRAMES) {
+        new_frames_array(false);
+    }
+
+    try_create_4k_frames();
 }

@@ -240,11 +240,11 @@ static inline pte_t *l1_table_entry(pte_t *tab, const void *va) {
 }
 
 static inline pgentry_t pgentry_from_paddr(paddr_t pa, unsigned long flags) {
-    return (pgentry_t) ((pa & ~(PADDR_MASK & PAGE_MASK)) | (flags & _PAGE_ALL_FLAGS));
+    return (pgentry_t)((pa & ~(PADDR_MASK & PAGE_MASK)) | (flags & _PAGE_ALL_FLAGS));
 }
 
 static inline paddr_t paddr_from_pgentry(pgentry_t pgentry) {
-    return (paddr_t) (pgentry & ~PADDR_MASK) & PAGE_MASK;
+    return (paddr_t)(pgentry & ~PADDR_MASK) & PAGE_MASK;
 }
 
 static inline pgentry_t pgentry_from_mfn(mfn_t mfn, unsigned long flags) {
@@ -391,7 +391,7 @@ void *__vmap_paging(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
                     unsigned long l4_flags,
 #endif
                     unsigned long l3_flags, unsigned long l2_flags,
-                    unsigned long l1_flags, bool special_path);
+                    unsigned long l1_flags, bool special_path, bool paging_lock);
 
 #endif /* __ASSEMBLY__ */
 
