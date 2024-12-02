@@ -182,6 +182,15 @@ void init_multiboot(unsigned long *addr, const char **cmdline) {
     }
 }
 
+bool mbi_reserved_range(addr_range_t *reserved_range) {
+    if (multiboot2_hdr == NULL)
+        return false;
+
+    reserved_range->start = multiboot2_hdr;
+    reserved_range->end = _ptr(_ul(multiboot2_hdr) + multiboot2_hdr_size);
+    return true;
+}
+
 void map_multiboot_areas(void) {
     paddr_t mbi_start = _paddr(multiboot2_hdr);
     vmap_range(mbi_start, multiboot2_hdr_size, L1_PROT_RO, VMAP_KERNEL | VMAP_IDENT);

@@ -89,6 +89,7 @@ extern int get_memory_range(paddr_t pa, addr_range_t *r);
 
 extern int get_avail_memory_range(unsigned index, addr_range_t *r);
 extern bool has_memory_range(paddr_t pa);
+extern bool in_reserved_range(paddr_t pa, size_t size);
 
 extern void init_regions(void);
 
