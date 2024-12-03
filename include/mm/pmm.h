@@ -143,8 +143,7 @@ static inline bool is_frame_free(const frame_t *frame) {
 }
 
 void refill_from_paging(void);
-frame_t *get_backup_frame(void);
-frame_t *_get_backup_frame(void);
+frame_t *get_free_frame_norefill(void);
 
 #endif /* __ASSEMBLY__ */
 

@@ -196,17 +196,11 @@ static inline void clean_pagetable(void *tab) {
         set_pgentry(e, MFN_INVALID, PT_NO_FLAGS);
 }
 
-static mfn_t get_cr3_mfn(cr3_t *cr3_entry, bool special_path) {
+static mfn_t get_cr3_mfn(cr3_t *cr3_entry) {
     void *cr3_mapped = NULL;
 
     if (mfn_invalid(cr3_entry->mfn)) {
-        frame_t *frame;
-        if (special_path) {
-            frame = _get_backup_frame();
-        }
-        else {
-            frame = get_backup_frame();
-        }
+        frame_t *frame = get_free_frame_norefill();
         BUG_ON(!frame);
         frame->flags.pagetable = 1;
 
@@ -238,8 +232,7 @@ static inline void pgentry_fixup_flags(pgentry_t *entry, unsigned long flags) {
     }
 }
 
-static mfn_t get_pgentry_mfn(mfn_t tab_mfn, pt_index_t index, unsigned long flags,
-                             bool special_path) {
+static mfn_t get_pgentry_mfn(mfn_t tab_mfn, pt_index_t index, unsigned long flags) {
     pgentry_t *tab, *entry;
     mfn_t mfn;
 
@@ -250,13 +243,7 @@ static mfn_t get_pgentry_mfn(mfn_t tab_mfn, pt_index_t index, unsigned long flag
 
     mfn = mfn_from_pgentry(*entry);
     if (mfn_invalid(mfn)) {
-        frame_t *frame;
-        if (special_path) {
-            frame = _get_backup_frame();
-        }
-        else {
-            frame = get_backup_frame();
-        }
+        frame_t *frame = get_free_frame_norefill();
         BUG_ON(!frame);
         frame->flags.pagetable = 1;
 
@@ -277,12 +264,12 @@ static mfn_t get_pgentry_mfn(mfn_t tab_mfn, pt_index_t index, unsigned long flag
  * MAP_FAILED when failed to map a NULL (0x0) virtual address and otherwise
  * it returns the same virtual address passed as argument.
  */
-void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
+static void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
 #if defined(__x86_64__)
-             unsigned long l4_flags,
+                   unsigned long l4_flags,
 #endif
-             unsigned long l3_flags, unsigned long l2_flags, unsigned long l1_flags,
-             bool special_path) {
+                   unsigned long l3_flags, unsigned long l2_flags,
+                   unsigned long l1_flags) {
     mfn_t l1t_mfn, l2t_mfn, l3t_mfn;
     pgentry_t *tab, *entry;
 
@@ -290,8 +277,7 @@ void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
         return va ? NULL : MAP_FAILED;
 
 #if defined(__x86_64__)
-    l3t_mfn = get_pgentry_mfn(get_cr3_mfn(cr3_ptr, special_path), l4_table_index(va),
-                              l4_flags, special_path);
+    l3t_mfn = get_pgentry_mfn(get_cr3_mfn(cr3_ptr), l4_table_index(va), l4_flags);
 #else
     l3t_mfn = get_cr3_mfn(cr3_ptr);
 #endif
@@ -304,7 +290,7 @@ void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
         goto done;
     }
 
-    l2t_mfn = get_pgentry_mfn(l3t_mfn, l3_table_index(va), l3_flags, special_path);
+    l2t_mfn = get_pgentry_mfn(l3t_mfn, l3_table_index(va), l3_flags);
 
     if (order == PAGE_ORDER_2M) {
         tab = tmp_map_mfn(l2t_mfn);
@@ -314,7 +300,7 @@ void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
         goto done;
     }
 
-    l1t_mfn = get_pgentry_mfn(l2t_mfn, l2_table_index(va), l2_flags, special_path);
+    l1t_mfn = get_pgentry_mfn(l2t_mfn, l2_table_index(va), l2_flags);
 
     tab = tmp_map_mfn(l1t_mfn);
     entry = &tab[l1_table_index(va)];
@@ -324,28 +310,6 @@ void *__vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
 done:
     refill_from_paging();
     return va;
-}
-static void *_vmap(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
-#if defined(__x86_64__)
-                   unsigned long l4_flags,
-#endif
-                   unsigned long l3_flags, unsigned long l2_flags,
-                   unsigned long l1_flags) {
-    return __vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags, false);
-}
-void *__vmap_paging(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
-#if defined(__x86_64__)
-                    unsigned long l4_flags,
-#endif
-                    unsigned long l3_flags, unsigned long l2_flags,
-                    unsigned long l1_flags, bool special_path, bool take_lock) {
-    if (take_lock)
-        spin_lock(&vmap_lock);
-    void *res = __vmap(cr3_ptr, va, mfn, order, l4_flags, l3_flags, l2_flags, l1_flags,
-                       special_path);
-    if (take_lock)
-        spin_unlock(&vmap_lock);
-    return res;
 }
 
 static inline void *__vmap_1g(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned long l4_flags,
@@ -453,6 +417,22 @@ void *vmap_4k(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned long l1_flags,
     spin_lock(&vmap_lock);
     va = _vmap_4k(cr3_ptr, _ptr(_va), mfn, l1_flags, propagate_user);
     spin_unlock(&vmap_lock);
+
+    return va;
+}
+
+void *vmap_frame_refill(void *va, mfn_t mfn, bool paging_lock) {
+    unsigned long _va = _ul(va) & PAGE_ORDER_TO_MASK(PAGE_ORDER_4K);
+
+    dprintk("%s: va: 0x%p mfn: 0x%lx\n", __func__, va, mfn);
+
+    ASSERT(vmap_lock);
+
+    if (paging_lock)
+        spin_lock(&vmap_lock);
+    va = _vmap_4k(&cr3, _ptr(_va), mfn, L1_PROT, false);
+    if (paging_lock)
+        spin_unlock(&vmap_lock);
 
     return va;
 }

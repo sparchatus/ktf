@@ -360,6 +360,8 @@ static inline void *vmap_kern_4k(void *va, mfn_t mfn, unsigned long l1_flags) {
     return vmap_4k(&cr3, va, mfn, l1_flags, false);
 }
 
+void *vmap_frame_refill(void *va, mfn_t mfn, bool paging_lock);
+
 static inline void *vmap_user(void *va, mfn_t mfn, unsigned int order,
 #if defined(__x86_64__)
                               unsigned long l4_flags,
@@ -385,13 +387,6 @@ static inline void setup_tlb_global(void) {
     unsigned long cr4 = read_cr4();
     write_cr4(opt_tlb_global ? (cr4 | X86_CR4_PGE) : (cr4 & ~X86_CR4_PGE));
 }
-
-void *__vmap_paging(cr3_t *cr3_ptr, void *va, mfn_t mfn, unsigned int order,
-#if defined(__x86_64__)
-                    unsigned long l4_flags,
-#endif
-                    unsigned long l3_flags, unsigned long l2_flags,
-                    unsigned long l1_flags, bool special_path, bool paging_lock);
 
 #endif /* __ASSEMBLY__ */
 
