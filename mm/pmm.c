@@ -41,8 +41,11 @@ static frames_array_t early_frames;
 static list_head_t free_frames[MAX_PAGE_ORDER + 1];
 static list_head_t busy_frames[MAX_PAGE_ORDER + 1];
 
-/* 1 frame for array frame, 3 for mapping it, times two for paging/pmm collisions */
-#define MIN_NUM_4K_FRAMES 2 * (1 + 3)
+/* 3 for paging and 4 for refilling (1 array frame, 3 for mapping it) */
+#define MIN_NUM_4K_FRAMES 3 + (1 + 3)
+/* enough frames to refill the 4K frames in worst case without running our of space */
+#define MIN_NOREFILL_FREE_FRAMES_THRESHOLD                                               \
+    (MIN_FREE_FRAMES_THRESHOLD + MIN_NUM_4K_FRAMES + (MAX_PAGE_ORDER - PAGE_ORDER_4K))
 static size_t frames_count[MAX_PAGE_ORDER + 1];
 
 static bool refilling;
@@ -150,7 +153,6 @@ error:
 }
 
 static frames_array_t *new_frames_array(void) {
-    dprintk("%s: new_frames_array\n", __func__);
     return _new_frames_array(true);
 }
 
@@ -603,22 +605,6 @@ static void merge_frames(frame_t *first) {
     merge_frames(first);
 }
 
-static inline bool enough_array_frames(void) {
-    frames_array_t *array;
-    size_t count = 0;
-
-    list_for_each_entry (array, &frames, list) {
-        count += array->meta.free_count;
-        /* TODO is this number correct ? */
-        if (count >= (MIN_FREE_FRAMES_THRESHOLD + MIN_NUM_4K_FRAMES +
-                      (MAX_PAGE_ORDER - PAGE_ORDER_4K))) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static inline bool enough_4k_frames(void) {
     frame_t *frame;
     int count = 0;
@@ -735,13 +721,12 @@ void map_frames_array(void) {
 }
 
 void refill_from_paging(void) {
-
     spin_lock(&lock);
 
     /* if a refill is already active then they are responsible */
     if (!refilling) {
-        /* make sure we have enough space to refill the 4K frames */
-        while (!enough_array_frames()) {
+        /* ensure enough space to refill 4K frames without frame array allocation */
+        while (total_free_frames < MIN_NOREFILL_FREE_FRAMES_THRESHOLD) {
             _new_frames_array(false);
         }
 
