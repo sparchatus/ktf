@@ -426,13 +426,17 @@ void *vmap_frame_refill(void *va, mfn_t mfn, bool paging_lock) {
 
     dprintk("%s: va: 0x%p mfn: 0x%lx\n", __func__, va, mfn);
 
-    ASSERT(vmap_lock);
-
     if (paging_lock)
         spin_lock(&vmap_lock);
+    else
+        ASSERT(vmap_lock);
+
     va = _vmap_4k(&cr3, _ptr(_va), mfn, L1_PROT, false);
+
     if (paging_lock)
         spin_unlock(&vmap_lock);
+    else
+        ASSERT(vmap_lock);
 
     return va;
 }

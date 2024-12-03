@@ -41,12 +41,14 @@ static frames_array_t early_frames;
 static list_head_t free_frames[MAX_PAGE_ORDER + 1];
 static list_head_t busy_frames[MAX_PAGE_ORDER + 1];
 
-/* 1 frame for array frame, 3 for mapping it, times to for paging/pmm collisions */
+/* 1 frame for array frame, 3 for mapping it, times two for paging/pmm collisions */
 #define MIN_NUM_4K_FRAMES 2 * (1 + 3)
 static size_t frames_count[MAX_PAGE_ORDER + 1];
 
 static bool refilling;
 static spinlock_t lock = SPINLOCK_INIT;
+
+static void try_create_4k_frames(void);
 
 static void spin_lock_norefill() {
     spin_lock(&lock);
@@ -110,7 +112,7 @@ static inline void init_frames_array(frames_array_t *array) {
     total_free_frames += array->meta.free_count;
 }
 
-static frames_array_t *_new_frames_array(bool paging_lock) {
+static frames_array_t *_new_frames_array(bool from_paging) {
     frames_array_t *array;
     frame_t *frame;
 
@@ -122,11 +124,13 @@ static frames_array_t *_new_frames_array(bool paging_lock) {
         array = (frames_array_t *) mfn_to_virt_kern(frame->mfn);
     else {
         /* switch to special refilling mode to avoid deadlock with paging */
+        ASSERT(!refilling);
         refilling = true;
         /* only paging will be allowed to take the lock while refilling */
         spin_unlock(&lock);
-        array = vmap_frame_refill(mfn_to_virt_map(frame->mfn), frame->mfn, paging_lock);
+        array = vmap_frame_refill(mfn_to_virt_map(frame->mfn), frame->mfn, from_paging);
         spin_lock(&lock);
+        ASSERT(refilling);
         refilling = false;
         if (!array)
             goto error;
@@ -135,6 +139,9 @@ static frames_array_t *_new_frames_array(bool paging_lock) {
     dprintk("%s: allocated new frames array: %p\n", __func__, array);
 
     init_frames_array(array);
+
+    /* since paging will back off from refilling we are responsible to do it here */
+    try_create_4k_frames();
 
     return array;
 error:
@@ -449,7 +456,7 @@ static frame_t *_find_mfn_frame(list_head_t *list, mfn_t mfn, unsigned int order
 frame_t *find_free_mfn_frame(mfn_t mfn, unsigned int order) {
     frame_t *frame;
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_mfn_frame(free_frames, mfn, order);
     spin_unlock(&lock);
 
@@ -459,7 +466,7 @@ frame_t *find_free_mfn_frame(mfn_t mfn, unsigned int order) {
 frame_t *find_busy_mfn_frame(mfn_t mfn, unsigned int order) {
     frame_t *frame;
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_mfn_frame(busy_frames, mfn, order);
     spin_unlock(&lock);
 
@@ -469,7 +476,7 @@ frame_t *find_busy_mfn_frame(mfn_t mfn, unsigned int order) {
 frame_t *find_mfn_frame(mfn_t mfn, unsigned int order) {
     frame_t *frame;
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_mfn_frame(busy_frames, mfn, order);
     if (!frame)
         frame = _find_mfn_frame(free_frames, mfn, order);
@@ -494,7 +501,7 @@ static frame_t *_find_paddr_frame(list_head_t *list, paddr_t paddr) {
 frame_t *find_free_paddr_frame(paddr_t paddr) {
     frame_t *frame;
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_paddr_frame(free_frames, paddr);
     spin_unlock(&lock);
 
@@ -504,7 +511,7 @@ frame_t *find_free_paddr_frame(paddr_t paddr) {
 frame_t *find_busy_paddr_frame(paddr_t paddr) {
     frame_t *frame;
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_paddr_frame(busy_frames, paddr);
     spin_unlock(&lock);
 
@@ -514,7 +521,7 @@ frame_t *find_busy_paddr_frame(paddr_t paddr) {
 frame_t *find_paddr_frame(paddr_t paddr) {
     frame_t *frame;
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_paddr_frame(busy_frames, paddr);
     if (!frame)
         frame = _find_paddr_frame(free_frames, paddr);
@@ -687,7 +694,7 @@ void put_free_frames(mfn_t mfn, unsigned int order) {
 
     ASSERT(order <= MAX_PAGE_ORDER);
 
-    spin_lock_norefill();
+    spin_lock(&lock);
     frame = _find_mfn_frame(busy_frames, mfn, order);
     if (!frame) {
         warning("PMM: unable to find frame: %lx, order: %u among busy frames", mfn,
@@ -729,7 +736,6 @@ void map_frames_array(void) {
 
 void refill_from_paging(void) {
 
-    printk("%s: start\n", __func__);
     spin_lock(&lock);
 
     /* if a refill is already active then they are responsible */
