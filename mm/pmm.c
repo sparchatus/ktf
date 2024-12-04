@@ -129,7 +129,7 @@ static frames_array_t *_new_frames_array(bool from_paging) {
         /* switch to special refilling mode to avoid deadlock with paging */
         ASSERT(!refilling);
         refilling = true;
-        /* only paging will be allowed to take the lock while refilling */
+        /* only paging will be allowed to take the lock for writing while refilling */
         spin_unlock(&lock);
         array = vmap_frame_refill(mfn_to_virt_map(frame->mfn), frame->mfn, from_paging);
         spin_lock(&lock);
