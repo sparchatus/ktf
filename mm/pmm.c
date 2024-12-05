@@ -48,19 +48,21 @@ static list_head_t busy_frames[MAX_PAGE_ORDER + 1];
     (MIN_FREE_FRAMES_THRESHOLD + MIN_NUM_4K_FRAMES + (MAX_PAGE_ORDER - PAGE_ORDER_4K))
 static size_t frames_count[MAX_PAGE_ORDER + 1];
 
-static bool refilling;
 static spinlock_t lock = SPINLOCK_INIT;
+
+static bool refilling;
+static spinlock_t priority_lock = SPINLOCK_INIT;
 
 static void try_create_4k_frames(void);
 
-static void spin_lock_norefill() {
+static void spin_lock_standard() {
     spin_lock(&lock);
+    spin_lock(&priority_lock);
+}
 
-    while (refilling) {
-        spin_unlock(&lock);
-        /* TODO: some backoff would be nice here... */
-        spin_lock(&lock);
-    }
+static void spin_unlock_standard() {
+    spin_unlock(&priority_lock);
+    spin_unlock(&lock);
 }
 
 void display_frames_count(void) {
@@ -129,12 +131,16 @@ static frames_array_t *_new_frames_array(bool from_paging) {
         /* switch to special refilling mode to avoid deadlock with paging */
         ASSERT(!refilling);
         refilling = true;
+
         /* only paging will be allowed to take the lock for writing while refilling */
-        spin_unlock(&lock);
+        spin_unlock(&priority_lock);
         array = vmap_frame_refill(mfn_to_virt_map(frame->mfn), frame->mfn, from_paging);
-        spin_lock(&lock);
+        spin_lock(&priority_lock);
+
+        /* switch back to normal mode */
         ASSERT(refilling);
         refilling = false;
+
         if (!array)
             goto error;
     }
@@ -458,9 +464,9 @@ static frame_t *_find_mfn_frame(list_head_t *list, mfn_t mfn, unsigned int order
 frame_t *find_free_mfn_frame(mfn_t mfn, unsigned int order) {
     frame_t *frame;
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_mfn_frame(free_frames, mfn, order);
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -468,9 +474,9 @@ frame_t *find_free_mfn_frame(mfn_t mfn, unsigned int order) {
 frame_t *find_busy_mfn_frame(mfn_t mfn, unsigned int order) {
     frame_t *frame;
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_mfn_frame(busy_frames, mfn, order);
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -478,11 +484,11 @@ frame_t *find_busy_mfn_frame(mfn_t mfn, unsigned int order) {
 frame_t *find_mfn_frame(mfn_t mfn, unsigned int order) {
     frame_t *frame;
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_mfn_frame(busy_frames, mfn, order);
     if (!frame)
         frame = _find_mfn_frame(free_frames, mfn, order);
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -503,9 +509,9 @@ static frame_t *_find_paddr_frame(list_head_t *list, paddr_t paddr) {
 frame_t *find_free_paddr_frame(paddr_t paddr) {
     frame_t *frame;
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_paddr_frame(free_frames, paddr);
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -513,9 +519,9 @@ frame_t *find_free_paddr_frame(paddr_t paddr) {
 frame_t *find_busy_paddr_frame(paddr_t paddr) {
     frame_t *frame;
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_paddr_frame(busy_frames, paddr);
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -523,11 +529,11 @@ frame_t *find_busy_paddr_frame(paddr_t paddr) {
 frame_t *find_paddr_frame(paddr_t paddr) {
     frame_t *frame;
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_paddr_frame(busy_frames, paddr);
     if (!frame)
         frame = _find_paddr_frame(free_frames, paddr);
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -631,7 +637,7 @@ static void try_create_4k_frames(void) {
  * This function does not split larger frames.
  */
 frame_t *get_free_frames_cond(free_frames_cond_t cb) {
-    spin_lock_norefill();
+    spin_lock_standard();
     try_create_4k_frames();
     for_each_order (order) {
         frame_t *frame;
@@ -639,12 +645,12 @@ frame_t *get_free_frames_cond(free_frames_cond_t cb) {
         list_for_each_entry (frame, &free_frames[order], list) {
             if (cb(frame)) {
                 reserve_frame(frame);
-                spin_unlock(&lock);
+                spin_unlock_standard();
                 return frame;
             }
         }
     }
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return NULL;
 }
@@ -655,7 +661,7 @@ frame_t *get_free_frames(unsigned int order) {
     if (order > MAX_PAGE_ORDER)
         return NULL;
 
-    spin_lock_norefill();
+    spin_lock_standard();
     if (order == PAGE_ORDER_4K)
         try_create_4k_frames();
 
@@ -663,14 +669,14 @@ frame_t *get_free_frames(unsigned int order) {
         BUG_ON(order == PAGE_ORDER_4K);
         frame = find_larger_frame(free_frames, order);
         if (!frame) {
-            spin_unlock(&lock);
+            spin_unlock_standard();
             return NULL;
         }
         split_frame(frame);
     }
 
     frame = reserve_frame(get_first_frame(free_frames, order));
-    spin_unlock(&lock);
+    spin_unlock_standard();
 
     return frame;
 }
@@ -680,7 +686,7 @@ void put_free_frames(mfn_t mfn, unsigned int order) {
 
     ASSERT(order <= MAX_PAGE_ORDER);
 
-    spin_lock(&lock);
+    spin_lock_standard();
     frame = _find_mfn_frame(busy_frames, mfn, order);
     if (!frame) {
         warning("PMM: unable to find frame: %lx, order: %u among busy frames", mfn,
@@ -692,20 +698,7 @@ void put_free_frames(mfn_t mfn, unsigned int order) {
         merge_frames(frame);
 
 unlock:
-    spin_unlock(&lock);
-}
-
-frame_t *get_free_frame_norefill(void) {
-    frame_t *frame;
-
-    spin_lock(&lock);
-    frame = reserve_frame(get_first_frame(free_frames, PAGE_ORDER_4K));
-    spin_unlock(&lock);
-
-    /* we ran out of reserved frames. increase MIN_NUM_4K_FRAMES */
-    BUG_ON(!frame);
-
-    return frame;
+    spin_unlock_standard();
 }
 
 void map_frames_array(void) {
@@ -720,8 +713,23 @@ void map_frames_array(void) {
     }
 }
 
+/* functions for paging to avoid deadlocks */
+
+frame_t *get_free_frame_norefill(void) {
+    frame_t *frame;
+
+    spin_lock(&priority_lock);
+    frame = reserve_frame(get_first_frame(free_frames, PAGE_ORDER_4K));
+    spin_unlock(&priority_lock);
+
+    /* we ran out of reserved frames. increase MIN_NUM_4K_FRAMES */
+    BUG_ON(!frame);
+
+    return frame;
+}
+
 void refill_from_paging(void) {
-    spin_lock(&lock);
+    spin_lock(&priority_lock);
 
     /* if a refill is already active then they are responsible */
     if (!refilling) {
@@ -734,5 +742,5 @@ void refill_from_paging(void) {
         try_create_4k_frames();
     }
 
-    spin_unlock(&lock);
+    spin_unlock(&priority_lock);
 }
